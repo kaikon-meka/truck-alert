@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>トラック用 動体検知＆発進アラート</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            margin: 0;
+            padding: 12px;
+            background-color: #121212;
+            color: #ffffff;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-height: 100vh;
+        }
+        h1 { font-size: 1.1rem; margin: 0 0 10px 0; color: #bbb; text-align: center; }
+        
+        .container {
+            width: 100%;
+            max-width: 500px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .video-container {
+            position: relative;
+            width: 100%;
+            background-color: #000;
+            border-radius: 8px;
+            overflow: hidden;
+            aspect-ratio: 4 / 3;
+        }
+
+        video, canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        #canvasOutput { z-index: 2; }
+        #canvasDebug { display: none; }
+
+        .status-panel {
+            background-color: #1e1e1e;
+            padding: 10px 14px;
+            border-radius: 8px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .status-text { font-size: 0.95rem; font-weight: bold; }
+        .status-value { font-size: 0.95rem; color: #4caf50; }
+
+        .controls {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+
+        button {
+            padding: 12px 0;
+            font-size: 1rem;
+            font-weight: bold;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: opacity 0.2s;
+        }
+
+        button:active { opacity: 0.8; }
+        #startBtn { background-color: #2196f3; color: white; }
+        #stopBtn { background-color: #f44336; color: white; opacity: 0.5; pointer-events: none; }
+
+        .settings-panel {
+            background-color: #1e1e1e;
+            padding: 12px 14px;
+            border-radius: 8px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .setting-item {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .setting-label {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.85rem;
+            color: #aaa;
+        }
+
+        input[type=range] {
+            width: 100%;
+            accent-color: #2196f3;
+        }
+
+        .checkbox-group {
+            display: flex;
+            gap: 15px;
+            margin-top: 2px;
+        }
+
+        .checkbox-label {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 0.85rem;
+            cursor: pointer;
+        }
+
+        .checkbox-label input { accent-color: #2196f3; }
+
+        .alert-overlay {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background-color: rgba(255, 0, 0, 0.4);
+            z-index: 3;
+            display: none;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>動体検知・発進アラート</h1>
+
+    <div class="container">
+        <div class="video-container">
+            <video id="webcam" playsinline autoplay muted></video>
+            <canvas id="canvasOutput"></canvas>
+            <canvas id="canvasDebug"></canvas>
+            <div id="alertOverlay" class="alert-overlay"></div>
+        </div>
+
+        <div class="status-panel">
+            <span class="status-text">ステータス</span>
+            <span id="statusValue" class="status-value" style="color: #888;">停止中</span>
+        </div>
+
+        <div class="controls">
+            <button id="startBtn">監視スタート</button>
+            <button id="stopBtn">停止</button>
+        </div>
+
+        <div class="settings-panel">
+            <div class="setting-item">
+                <div class="setting-label">
+                    <span>検知感度 (閾値)</span>
+                    <span id="sensitivityVal">30</span>
+                </div>
+                <input type="range" id="sensitivity" min="10" max="80" value="30">
+            </div>
+
+            <div class="setting-item">
+                <div class="setting-label">
+                    <span>アラート発生エリア割合</span>
+                    <span id="areaRatioVal">2.0%</span>
+                </div>
+                <input type="range" id="areaRatio" min="0.5" max="10.0" step="0.5" value="2.0">
+            </div>
+
+            <div class="setting-item">
+                <div class="setting-label">
+                    <span>警告音・通知設定</span>
+                </div>
+                <div class="checkbox-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="enableSiren" checked> サイレン
+                    </label>
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="enableVoice" checked> 音声読み上げ
+                    </label>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const video = document.getElementById('webcam');
+        const canvasOutput = document.getElementById('canvasOutput');
+        const ctxOutput = canvasOutput.getContext('2d');
+        const canvasDebug = document.getElementById('canvasDebug');
+        const ctxDebug = canvasDebug.getContext('2d');
+        const alertOverlay = document.getElementById('alertOverlay');
+
+        const startBtn = document.getElementById('startBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const statusValue = document.getElementById('statusValue');
+
+        const sensitivityInput = document.getElementById('sensitivity');
+        const sensitivityVal = document.getElementById('sensitivityVal');
+        const areaRatioInput = document.getElementById('areaRatio');
+        const areaRatioVal = document.getElementById('areaRatioVal');
+        const enableSiren = document.getElementById('enableSiren');
+        const enableVoice = document.getElementById('enableVoice');
+
+        let isMonitoring = false;
+        let animationFrameId = null;
+        let prevFrameData = null;
+        let audioCtx = null;
+        let lastSpeechTime = 0;
+
+        sensitivityInput.addEventListener('input', (e) => sensitivityVal.textContent = e.target.value);
+        areaRatioInput.addEventListener('input', (e) => areaRatioVal.textContent = parseFloat(e.target.value).toFixed(1) + '%');
+
+        function initAudio() {
+            if (!audioCtx) {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            }
+            if (audioCtx.state === 'suspended') {
+                audioCtx.resume();
+            }
+        }
+
+        function unlockAudioForiOS() {
+            initAudio();
+            if (audioCtx) {
+                const buffer = audioCtx.createBuffer(1, 1, 22050);
+                const source = audioCtx.createBufferSource();
+                source.buffer = buffer;
+                source.connect(audioCtx.destination);
+                source.start(0);
+            }
+            if ('speechSynthesis' in window) {
+                const uttr = new SpeechSynthesisUtterance('');
+                window.speechSynthesis.speak(uttr);
+            }
+        }
+
+        function playSiren() {
+            if (!enableSiren.checked) return;
+            initAudio();
+            if (!audioCtx) return;
+
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            
+            osc.type = 'sawtooth';
+            const now = audioCtx.currentTime;
+            
+            osc.frequency.setValueAtTime(800, now);
+            osc.frequency.exponentialRampToValueAtTime(400, now + 0.3);
+            
+            gain.gain.setValueAtTime(0.3, now);
+            gain.gain.exponentialRampToValueAtTime(0.01, now + 0.3);
+
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+
+            osc.start(now);
+            osc.stop(now + 0.3);
+        }
+
+        function speakAlert(text) {
+            if (!enableVoice.checked) return;
+            const now = Date.now();
+            if (now - lastSpeechTime < 2500) return;
+            lastSpeechTime = now;
+
+            if ('speechSynthesis' in window) {
+                window.speechSynthesis.cancel();
+                const uttr = new SpeechSynthesisUtterance(text);
+                uttr.lang = 'ja-JP';
+                uttr.rate = 1.2;
+                window.speechSynthesis.speak(uttr);
+            }
+        }
+
+        async function startCamera() {
+            try {
+                unlockAudioForiOS();
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 } },
+                    audio: false
+                });
+                video.srcObject = stream;
+                await video.play();
+
+                canvasOutput.width = video.videoWidth;
+                canvasOutput.height = video.videoHeight;
+                canvasDebug.width = Math.floor(video.videoWidth / 4);
+                canvasDebug.height = Math.floor(video.videoHeight / 4);
+
+                isMonitoring = true;
+                startBtn.disabled = true;
+                startBtn.style.opacity = '0.5';
+                stopBtn.disabled = false;
+                stopBtn.style.opacity = '1';
+                statusValue.textContent = '監視中';
+                statusValue.style.color = '#4caf50';
+
+                speakAlert('監視を開始しました');
+                processVideo();
+            } catch (err) {
+                alert('カメラの起動に失敗しました: ' + err.message);
+            }
+        }
+
+        function stopCamera() {
+            isMonitoring = false;
+            if (animationFrameId) cancelAnimationFrame(animationFrameId);
+
+            if (video.srcObject) {
+                video.srcObject.getTracks().forEach(track => track.stop());
+                video.srcObject = null;
+            }
+
+            ctxOutput.clearRect(0, 0, canvasOutput.width, canvasOutput.height);
+            prevFrameData = null;
+
+            startBtn.disabled = false;
+            startBtn.style.opacity = '1';
+            stopBtn.disabled = true;
+            stopBtn.style.opacity = '0.5';
+            statusValue.textContent = '停止中';
+            statusValue.style.color = '#888';
+            alertOverlay.style.display = 'none';
+        }
+
+        function processVideo() {
+            if (!isMonitoring) return;
+
+            const dw = canvasDebug.width;
+            const dh = canvasDebug.height;
+
+            ctxDebug.drawImage(video, 0, 0, dw, dh);
+            const currentFrame = ctxDebug.getImageData(0, 0, dw, dh);
+            const currentData = currentFrame.data;
+
+            ctxOutput.clearRect(0, 0, canvasOutput.width, canvasOutput.height);
+
+            if (prevFrameData) {
+                const threshold = parseInt(sensitivityInput.value, 10);
+                let diffPixelCount = 0;
+                const totalPixels = dw * dh;
+
+                let minX = dw, minY = dh, maxX = 0, maxY = 0;
+
+                for (let i = 0; i < currentData.length; i += 4) {
+                    const rDiff = Math.abs(currentData[i] - prevFrameData[i]);
+                    const gDiff = Math.abs(currentData[i+1] - prevFrameData[i+1]);
+                    const bDiff = Math.abs(currentData[i+2] - prevFrameData[i+2]);
+                    const avgDiff = (rDiff + gDiff + bDiff) / 3;
+
+                    if (avgDiff > threshold) {
+                        diffPixelCount++;
+                        const pixelIdx = i / 4;
+                        const x = pixelIdx % dw;
+                        const y = Math.floor(pixelIdx / dw);
+
+                        if (x < minX) minX = x;
+                        if (x > maxX) maxX = x;
+                        if (y < minY) minY = y;
+                        if (y > maxY) maxY = y;
+                    }
+                }
+
+                const diffRatio = (diffPixelCount / totalPixels) * 100;
+                const targetRatio = parseFloat(areaRatioInput.value);
+
+                if (diffRatio >= targetRatio) {
+                    alertOverlay.style.display = 'block';
+                    playSiren();
+                    speakAlert('動きを検知しました');
+
+                    const scaleX = canvasOutput.width / dw;
+                    const scaleY = canvasOutput.height / dh;
+
+                    ctxOutput.strokeStyle = '#ff3333';
+                    ctxOutput.lineWidth = 4;
+                    ctxOutput.strokeRect(
+                        minX * scaleX,
+                        minY * scaleY,
+                        (maxX - minX) * scaleX,
+                        (maxY - minY) * scaleY
+                    );
+                } else {
+                    alertOverlay.style.display = 'none';
+                }
+            }
+
+            prevFrameData = currentData;
+            animationFrameId = requestAnimationFrame(processVideo);
+        }
+
+        startBtn.addEventListener('click', startCamera);
+        stopBtn.addEventListener('click', stopCamera);
+    </script>
+</body>
+</html>
