@@ -1,216 +1,653 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>トラック用 動体検知＆発進アラート</title>
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #121212; color: #fff; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
-    
-    /* ヘッダー */
-    header { background: #1e1e1e; padding: 10px 15px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #333; }
-    h1 { font-size: 16px; font-weight: bold; color: #00e676; }
-    .status-badge { font-size: 12px; padding: 4px 8px; border-radius: 4px; background: #333; color: #aaa; }
-    .status-badge.active { background: #00e676; color: #000; font-weight: bold; }
-    
-    /* 映像表示エリア */
-    .viewport { position: relative; flex: 1; background: #000; overflow: hidden; display: flex; justify-content: center; align-items: center; }
-    video, canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: contain; }
-    
-    /* アラートオーバーレイ */
-    .alert-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(255, 23, 68, 0.5); display: none; justify-content: center; align-items: center; z-index: 10; pointer-events: none; }
-    .alert-msg { font-size: 28px; font-weight: bold; color: #fff; text-shadow: 0 0 10px #000; background: rgba(0,0,0,0.8); padding: 15px 25px; border-radius: 8px; border: 2px solid #ff1744; }
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>トラック用 動体検知＆発進アラート (光ノイズカット搭載版)</title> 
+<style>
+* { box-sizing: border-box; }
+body {
+  margin: 0; padding: 0; background: #111; color: #fff;
+  font-family: sans-serif; overflow: hidden;
+  display: flex; flex-direction: column;
+  height: 100vh; height: 100dvh;
+}
+#main-layout { display: flex; flex-direction: column; width: 100%; height: 100%; overflow: hidden; }
+#container {
+  position: relative; width: 100%; flex: 1; min-height: 0;
+  display: flex; justify-content: center; align-items: center;
+  background: #000; overflow: hidden; z-index: 1;
+}
+video, canvas#output-canvas { position: absolute; width: 100%; height: 100%; object-fit: cover; }
+canvas#output-canvas { pointer-events: none; } 
 
-    /* コントロールパネル */
-    .controls { background: #1e1e1e; padding: 12px 15px; border-top: 1px solid #333; display: flex; flex-direction: column; gap: 10px; }
-    .row { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
-    
-    /* ボタンデザイン */
-    .btn { flex: 1; padding: 12px; border: none; border-radius: 6px; font-size: 15px; font-weight: bold; color: #fff; background: #333; cursor: pointer; text-align: center; }
-    .btn-primary { background: #00e676; color: #000; }
-    .btn-danger { background: #ff1744; color: #fff; }
-    .btn:active { opacity: 0.8; }
+#target-box {
+  position: absolute; border: 3px dashed #ffeb3b;
+  box-shadow: 0 0 15px rgba(255, 235, 59, 0.5);
+  background: rgba(255, 235, 59, 0.05);
+  cursor: move; touch-action: none; z-index: 4;
+  transition: border 0.1s, box-shadow 0.1s;
+}
+#target-box.is-active {
+  border: 3px solid #00bfff;
+  background: rgba(0, 191, 255, 0.15);
+  box-shadow: 0 0 20px rgba(0, 191, 255, 0.8);
+} 
 
-    /* スライダー */
-    .slider-group { flex: 2; display: flex; flex-direction: column; gap: 2px; }
-    .slider-label { font-size: 11px; color: #aaa; display: flex; justify-content: space-between; }
-    input[type=range] { width: 100%; accent-color: #00e676; }
-  </style>
+#resize-handle {
+  position: absolute; right: -12px; bottom: -12px;
+  width: 28px; height: 28px; background: #00bfff;
+  border: 2px solid #fff; border-radius: 50%;
+  box-shadow: 0 0 10px rgba(0,0,0,0.5);
+  cursor: se-resize; touch-action: none; z-index: 5;
+  display: flex; justify-content: center; align-items: center;
+}
+#resize-handle::after { content: "↘"; font-size: 14px; color: #fff; font-weight: bold; line-height: 1; } 
+
+#tap-marker {
+  position: absolute; width: 60px; height: 60px; border: 3px solid #00e676;
+  border-radius: 50%; transform: translate(-50%, -50%); display: none;
+  pointer-events: auto;
+  cursor: move; touch-action: none; z-index: 5;
+  box-shadow: 0 0 15px #00e676;
+  animation: pulse 1s infinite alternate; transition: border-color 0.2s;
+}
+@keyframes pulse { from { transform: translate(-50%, -50%) scale(0.9); } to { transform: translate(-50%, -50%) scale(1.1); } } 
+
+#zoom-preview-container {
+  position: absolute; top: 10px; right: 10px; width: 130px; height: 130px;
+  border: 2px solid #00ffcc; background: #000; z-index: 5; display: none;
+  overflow: hidden; border-radius: 8px; pointer-events: none;
+}
+#zoom-canvas { width: 100%; height: 100%; object-fit: cover; }
+.zoom-label { position: absolute; bottom: 2px; right: 4px; font-size: 10px; color: #00ffcc; background: rgba(0,0,0,0.7); padding: 1px 3px; }
+
+#ai-status { font-size: 11px; color: #4CAF50; text-align: center; font-weight: bold; }
+#gps-status { font-size: 11px; color: #00bfff; text-align: center; margin-top: 2px; }
+
+#controls {
+  flex-shrink: 0; background: #222; width: 100%; max-width: 500px; margin: 0 auto;
+  padding: 8px 12px; display: flex; flex-direction: column; gap: 4px; z-index: 10; border-top: 1px solid #444;
+  overflow-y: auto; max-height: 45vh;
+}
+.btn-row { display: flex; gap: 8px; margin-top: 2px; }
+button { flex: 1; padding: 10px; font-size: 14px; font-weight: bold; border: none; border-radius: 6px; cursor: pointer; }
+#start-btn { background: #4CAF50; color: white; }
+#stop-btn { background: #f44336; color: white; }
+
+.slider-group { display: flex; align-items: center; gap: 6px; font-size: 12px; margin-bottom: 2px; }
+.slider-group label { width: 110px; flex-shrink: 0; }
+.slider-group input[type="range"], .slider-group select { flex: 1; padding: 3px; background: #333; color: #fff; border: 1px solid #555; border-radius: 4px; font-size: 12px; }
+.slider-group span.val-disp { width: 45px; text-align: right; display: inline-block; }
+
+/* 光フィルター用の特別なスタイル */
+.light-filter-row { background: rgba(255, 152, 0, 0.15); padding: 4px; border-radius: 4px; border-left: 3px solid #FF9800; }
+.light-filter-row label { width: 90px; color: #FFB74D; font-weight: bold; }
+</style>
 </head>
-<body>
 
-  <header>
-    <h1>トラックモニター AI</h1>
-    <div id="status" class="status-badge">停止中</div>
-  </header>
-
-  <div class="viewport">
+<body> 
+<div id="main-layout">
+  <div id="container">
     <video id="webcam" autoplay playsinline muted></video>
-    <canvas id="canvas"></canvas>
-    <div id="alertOverlay" class="alert-overlay">
-      <div id="alertMsg" class="alert-msg">動体を検知！</div>
+    <canvas id="output-canvas"></canvas> 
+    
+    <div id="target-box">
+      <div id="resize-handle"></div>
+    </div>
+    <div id="tap-marker"></div> 
+    
+    <div id="zoom-preview-container">
+      <canvas id="zoom-canvas"></canvas>
+      <div class="zoom-label">ZOOM</div>
+    </div>
+  </div> 
+
+  <div id="controls">
+    <div id="ai-status">✅ 準備完了</div> 
+    <div id="gps-status">📡 GPS: 未作動</div>
+
+    <div class="slider-group">
+      <label>動作モード:</label>
+      <select id="app-mode-select">
+        <option value="area_watch" selected>① 枠内エリア監視</option>
+        <option value="car_start">② 先行車発進アラート</option>
+      </select>
+    </div> 
+
+    <div class="slider-group">
+      <label>環境モード:</label>
+      <select id="night-mode-select">
+        <option value="off" selected>☀️ 通常（日中）</option>
+        <option value="on">🌙 夜間・雨天（明るさ増幅）</option>
+      </select>
+    </div> 
+
+    <div id="area-options">
+      <div class="slider-group">
+        <label>枠サイズ:</label>
+        <input type="range" id="box-size-slider" min="10" max="90" value="50">
+        <span class="val-disp" id="size-val">50%</span>
+      </div>
+    </div> 
+
+    <div class="slider-group">
+      <label>メイン感度:</label>
+      <input type="range" id="shake-slider" min="1" max="5" value="3">
+      <span class="val-disp" id="shake-val">標準</span>
+    </div> 
+
+    <!-- ★追加: 光変化カット用スライダー -->
+    <div class="slider-group light-filter-row">
+      <label>☀️ 光変化カット:</label>
+      <input type="range" id="light-filter-slider" min="0" max="100" value="60">
+      <span class="val-disp" id="light-filter-val">60%</span>
+    </div>
+
+    <div class="slider-group">
+      <label>再開ウェイト:</label>
+      <input type="range" id="delay-slider" min="1" max="10" value="4">
+      <span class="val-disp" id="delay-val">4秒</span>
+    </div>
+
+    <div class="btn-row">
+      <button id="start-btn">監視スタート</button>
+      <button id="stop-btn">停止</button>
     </div>
   </div>
+</div> 
 
-  <div class="controls">
-    <div class="row">
-      <button id="toggleBtn" class="btn btn-primary">カメラ開始</button>
-      <button id="resetAlertBtn" class="btn" style="display:none;">アラート解除</button>
-    </div>
+<script>
+const video = document.getElementById('webcam');
+const outputCanvas = document.getElementById('output-canvas');
+const ctx = outputCanvas.getContext('2d', { willReadFrequently: true });
+const container = document.getElementById('container');
+const targetBox = document.getElementById('target-box');
+const resizeHandle = document.getElementById('resize-handle');
+const tapMarker = document.getElementById('tap-marker');
+const startBtn = document.getElementById('start-btn');
+const stopBtn = document.getElementById('stop-btn');
+const boxSizeSlider = document.getElementById('box-size-slider');
+const sizeVal = document.getElementById('size-val');
+const shakeSlider = document.getElementById('shake-slider');
+const shakeVal = document.getElementById('shake-val');
+const delaySlider = document.getElementById('delay-slider');
+const delayVal = document.getElementById('delay-val');
+const appModeSelect = document.getElementById('app-mode-select');
+const nightModeSelect = document.getElementById('night-mode-select');
+const areaOptions = document.getElementById('area-options');
+const zoomContainer = document.getElementById('zoom-preview-container');
+const zoomCanvas = document.getElementById('zoom-canvas');
+const zoomCtx = zoomCanvas.getContext('2d');
+const aiStatus = document.getElementById('ai-status'); 
+const gpsStatus = document.getElementById('gps-status');
 
-    <div class="row">
-      <div class="slider-group">
-        <div class="slider-label"><span>感度 (閾値)</span><span id="sensVal">30</span></div>
-        <input type="range" id="sensitivity" min="5" max="100" value="30">
-      </div>
-      <div class="slider-group">
-        <div class="slider-label"><span>検知エリア割合</span><span id="areaVal">10%</span></div>
-        <input type="range" id="areaSize" min="5" max="50" value="10">
-      </div>
-    </div>
-  </div>
+// ★追加要素の取得
+const lightFilterSlider = document.getElementById('light-filter-slider');
+const lightFilterVal = document.getElementById('light-filter-val');
 
-  <script>
-    const video = document.getElementById('webcam');
-    const canvas = document.getElementById('canvas');
-    const ctx = canvas.getContext('2d');
-    const toggleBtn = document.getElementById('toggleBtn');
-    const statusBadge = document.getElementById('status');
-    const alertOverlay = document.getElementById('alertOverlay');
-    const resetAlertBtn = document.getElementById('resetAlertBtn');
-    const sensitivityInput = document.getElementById('sensitivity');
-    const sensVal = document.getElementById('sensVal');
-    const areaSizeInput = document.getElementById('areaSize');
-    const areaVal = document.getElementById('areaVal');
+let isMonitoring = false;
+let prevImageData = null;
+let tapBaseImageData = null;
+let lastCheckTime = 0;
+let sensitivityThreshold = 0.15; 
+// ★光変化のカット閾値（デフォルト60%）
+// 画面全体の何%以上が一気に変化したら「光」とみなして無視するか
+let lightFilterThreshold = 0.60; 
 
-    let isRunning = false;
-    let animFrameId = null;
-    let prevFrameData = null;
-    let audioCtx = null;
+let alarmTriggered = false;
+let speechCount = 0;
+let audioCtx = null;
+let sirenOsc = null;
+let sirenGain = null;
+let sirenTimer = null;
+let alarmTimeoutTimer = null; 
 
-    // スライダー変更イベント
-    sensitivityInput.addEventListener('input', () => sensVal.textContent = sensitivityInput.value);
-    areaSizeInput.addEventListener('input', () => areaVal.textContent = areaSizeInput.value + '%');
+let boxConfig = { width: 50, height: 40, x: 25, y: 25 };
+let containerRect = { width: 0, height: 0 };
+let tapPoint = null; 
 
-    // Web Audio API による警告音生成
-    function playBeep() {
-      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      if (audioCtx.state === 'suspended') audioCtx.resume();
-      
-      const osc = audioCtx.createOscillator();
-      const gain = audioCtx.createGain();
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(880, audioCtx.currentTime); // A5ノート
-      gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
-      
-      osc.connect(gain);
-      gain.connect(audioCtx.destination);
-      
-      osc.start();
-      osc.stop(audioCtx.currentTime + 0.3);
-    }
+let gpsWatcherId = null;
+let isVehicleMoving = false;
 
-    // カメラ切り替え
-    toggleBtn.addEventListener('click', async () => {
-      if (!isRunning) {
-        try {
-          const stream = await navigator.mediaDevices.getUserMedia({
-            video: { facingMode: { exact: "environment" } }, // 背面カメラを試行
-            audio: false
-          }).catch(() => {
-            return navigator.mediaDevices.getUserMedia({ video: true, audio: false }); // フォールバック
-          });
+function updateContainerRect() {
+  const rect = container.getBoundingClientRect();
+  containerRect.width = rect.width;
+  containerRect.height = rect.height;
+} 
 
-          video.srcObject = stream;
-          await video.play();
-          
-          isRunning = true;
-          toggleBtn.textContent = '停止';
-          toggleBtn.className = 'btn btn-danger';
-          statusBadge.textContent = '監視中';
-          statusBadge.classList.add('active');
-          
-          // キャンバスサイズを映像に合わせる
-          canvas.width = video.videoWidth || 320;
-          canvas.height = video.videoHeight || 240;
+function updateBoxStyle() {
+  targetBox.style.width = boxConfig.width + '%';
+  targetBox.style.height = boxConfig.height + '%';
+  targetBox.style.left = boxConfig.x + '%';
+  targetBox.style.top = boxConfig.y + '%';
+  sizeVal.textContent = Math.round(boxConfig.width) + '%';
+} 
 
-          processFrame();
-        } catch (err) {
-          alert('カメラの起動に失敗しました: ' + err.message);
-        }
-      } else {
-        stopMonitoring();
-      }
-    });
+function unlockAudioForiOS() {
+  if (!audioCtx) {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  }
+  if (audioCtx.state === 'suspended') {
+    audioCtx.resume();
+  }
+  if ('speechSynthesis' in window) {
+    const dummyUttr = new SpeechSynthesisUtterance('');
+    dummyUttr.volume = 0;
+    window.speechSynthesis.speak(dummyUttr);
+  }
+}
 
-    function stopMonitoring() {
-      isRunning = false;
-      if (animFrameId) cancelAnimationFrame(animFrameId);
-      if (video.srcObject) {
-        video.srcObject.getTracks().forEach(track => track.stop());
-      }
-      toggleBtn.textContent = 'カメラ開始';
-      toggleBtn.className = 'btn btn-primary';
-      statusBadge.textContent = '停止中';
-      statusBadge.classList.remove('active');
-      alertOverlay.style.display = 'none';
-      prevFrameData = null;
-    }
+appModeSelect.addEventListener('change', (e) => {
+  const mode = e.target.value;
+  resetAlarmState();
+  if (mode === 'car_start') {
+    areaOptions.style.display = 'none';
+    targetBox.style.display = 'none';
+    aiStatus.textContent = "👆 画面をタップして先行車を指定してね";
+  } else {
+    areaOptions.style.display = 'block';
+    targetBox.style.display = 'block';
+    tapMarker.style.display = 'none';
+    tapPoint = null;
+    aiStatus.textContent = "✅ 準備完了（枠内監視モード）";
+  }
+}); 
 
-    // アラート手動解除
-    resetAlertBtn.addEventListener('click', () => {
-      alertOverlay.style.display = 'none';
-      resetAlertBtn.style.display = 'none';
-    });
+nightModeSelect.addEventListener('change', () => { resetAlarmState(); }); 
 
-    // 動体検知処理ループ
-    function processFrame() {
-      if (!isRunning) return;
+delaySlider.addEventListener('input', (e) => {
+  delayVal.textContent = e.target.value + '秒';
+});
 
-      const width = canvas.width;
-      const height = canvas.height;
+// ★光フィルタースライダーのイベントリスナー
+lightFilterSlider.addEventListener('input', (e) => {
+  const val = parseInt(e.target.value);
+  lightFilterThreshold = val / 100;
+  if(val === 100) {
+      lightFilterVal.textContent = "OFF";
+  } else {
+      lightFilterVal.textContent = val + '%';
+  }
+});
 
-      // 簡易処理のためリサイズ描画（低負荷化）
-      ctx.drawImage(video, 0, 0, width, height);
-      const currentFrame = ctx.getImageData(0, 0, width, height);
-      
-      if (prevFrameData) {
-        let diffCount = 0;
-        const threshold = parseInt(sensitivityInput.value, 10);
-        const requiredDiffRatio = parseInt(areaSizeInput.value, 10) / 100;
-        const totalPixels = width * height;
+container.addEventListener('click', (e) => {
+  if (appModeSelect.value !== 'car_start') return;
+  if (e.target === tapMarker) return;
+  const rect = container.getBoundingClientRect();
+  const clickX = e.clientX - rect.left;
+  const clickY = e.clientY - rect.top; 
 
-        // ピクセル単位で差分を計算 (4バイトごとにRGBA)
-        for (let i = 0; i < currentFrame.data.length; i += 16) { // 軽易化のため4ピクセル飛ばし
-          const rDiff = Math.abs(currentFrame.data[i] - prevFrameData.data[i]);
-          const gDiff = Math.abs(currentFrame.data[i+1] - prevFrameData.data[i+1]);
-          const bDiff = Math.abs(currentFrame.data[i+2] - prevFrameData.data[i+2]);
-          
-          if ((rDiff + gDiff + bDiff) / 3 > threshold) {
-            diffCount++;
+  tapPoint = { x: clickX, y: clickY };
+  tapMarker.style.left = clickX + 'px';
+  tapMarker.style.top = clickY + 'px';
+  tapMarker.style.display = 'block';
+  tapMarker.style.borderColor = "#00e676"; 
+
+  tapBaseImageData = null;
+  resetAlarmState();
+  aiStatus.textContent = "🚗 先行車の位置を固定しました！";
+}); 
+
+let isDragging = false, isResizing = false, isDraggingTap = false;
+let dragStartX, dragStartY, boxStartX, boxStartY, boxStartW, boxStartH; 
+
+targetBox.addEventListener('pointerdown', (e) => {
+  if (appModeSelect.value !== 'area_watch') return;
+  if (e.target === resizeHandle) return;
+  isDragging = true; targetBox.classList.add('is-active'); targetBox.setPointerCapture(e.pointerId);
+  dragStartX = e.clientX; dragStartY = e.clientY;
+  boxStartX = (boxConfig.x / 100) * containerRect.width;
+  boxStartY = (boxConfig.y / 100) * containerRect.height;
+}); 
+
+resizeHandle.addEventListener('pointerdown', (e) => {
+  if (appModeSelect.value !== 'area_watch') return;
+  e.stopPropagation();
+  isResizing = true; targetBox.classList.add('is-active'); resizeHandle.setPointerCapture(e.pointerId);
+  dragStartX = e.clientX; dragStartY = e.clientY;
+  boxStartW = (boxConfig.width / 100) * containerRect.width;
+  boxStartH = (boxConfig.height / 100) * containerRect.height;
+}); 
+
+tapMarker.addEventListener('pointerdown', (e) => {
+  if (appModeSelect.value !== 'car_start') return;
+  isDraggingTap = true; tapMarker.setPointerCapture(e.pointerId); e.stopPropagation();
+}); 
+
+window.addEventListener('pointermove', (e) => {
+  if (isDragging) {
+    const dx = e.clientX - dragStartX, dy = e.clientY - dragStartY;
+    let newX = boxStartX + dx, newY = boxStartY + dy;
+    const boxW = (boxConfig.width / 100) * containerRect.width, boxH = (boxConfig.height / 100) * containerRect.height;
+    if (newX < 0) newX = 0; if (newX + boxW > containerRect.width) newX = containerRect.width - boxW;
+    if (newY < 0) newY = 0; if (newY + boxH > containerRect.height) newY = containerRect.height - boxH;
+    boxConfig.x = (newX / containerRect.width) * 100; boxConfig.y = (newY / containerRect.height) * 100; updateBoxStyle();
+  } else if (isResizing) {
+    const dx = e.clientX - dragStartX, dy = e.clientY - dragStartY;
+    let newW = boxStartW + dx, newH = boxStartH + dy;
+    const minW = containerRect.width * 0.1, minH = containerRect.height * 0.1;
+    if (newW < minW) newW = minW; if (newH < minH) newH = minH;
+    const boxX = (boxConfig.x / 100) * containerRect.width, boxY = (boxConfig.y / 100) * containerRect.height;
+    if (boxX + newW > containerRect.width) newW = containerRect.width - boxX;
+    if (boxY + newH > containerRect.height) newH = containerRect.height - boxY;
+    boxConfig.width = (newW / containerRect.width) * 100; boxConfig.height = (newH / containerRect.height) * 100;
+    boxSizeSlider.value = boxConfig.width; updateBoxStyle();
+  } else if (isDraggingTap) {
+    const rect = container.getBoundingClientRect();
+    const x = e.clientX - rect.left, y = e.clientY - rect.top;
+    tapPoint = { x, y }; tapMarker.style.left = x + 'px'; tapMarker.style.top = y + 'px';
+    tapBaseImageData = null; resetAlarmState();
+  }
+}); 
+
+window.addEventListener('pointerup', () => { isDragging = false; isResizing = false; isDraggingTap = false; targetBox.classList.remove('is-active'); });
+boxSizeSlider.addEventListener('input', (e) => { boxConfig.width = parseInt(e.target.value); boxConfig.height = parseInt(e.target.value); updateBoxStyle(); });
+shakeSlider.addEventListener('input', (e) => {
+  const val = parseInt(e.target.value);
+  const thresholds = [0.35, 0.25, 0.15, 0.08, 0.04];
+  sensitivityThreshold = thresholds[val - 1];
+  const labels = ["超鈍感", "鈍感", "標準", "敏感", "超敏感"];
+  shakeVal.textContent = labels[val - 1];
+});
+window.addEventListener('resize', () => { updateContainerRect(); updateBoxStyle(); }); 
+
+async function initCamera() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 } }, audio: false });
+    video.srcObject = stream; updateContainerRect(); updateBoxStyle();
+  } catch (err) { alert('カメラ起動失敗: ' + err); }
+} 
+
+function startSirenSound() {
+  stopSirenSound();
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (audioCtx.state === 'suspended') audioCtx.resume(); 
+  sirenOsc = audioCtx.createOscillator();
+  sirenGain = audioCtx.createGain(); 
+  sirenOsc.type = 'sawtooth';
+  sirenGain.gain.setValueAtTime(0.6, audioCtx.currentTime); 
+  sirenOsc.connect(sirenGain);
+  sirenGain.connect(audioCtx.destination); 
+  sirenOsc.start(); 
+  let highPitch = false;
+  sirenTimer = setInterval(() => {
+    if (!sirenOsc) return;
+    const now = audioCtx.currentTime;
+    const freq = highPitch ? 700 : 1000;
+    sirenOsc.frequency.linearRampToValueAtTime(freq, now + 0.1);
+    highPitch = !highPitch;
+  }, 350); 
+  if (alarmTimeoutTimer) clearTimeout(alarmTimeoutTimer);
+  alarmTimeoutTimer = setTimeout(() => {
+    resetAlarmState();
+    aiStatus.textContent = "⏰ サイレンが15秒経過したため自動停止しました";
+  }, 15000);
+} 
+
+function stopSirenSound() {
+  if (sirenTimer) { clearInterval(sirenTimer); sirenTimer = null; }
+  if (sirenOsc) {
+    try { sirenOsc.stop(); sirenOsc.disconnect(); } catch(e){}
+    sirenOsc = null;
+  }
+} 
+
+function speakVoiceThreeTimes(voiceText) {
+  if (!('speechSynthesis' in window)) {
+    startSirenSound();
+    return;
+  } 
+  window.speechSynthesis.cancel();
+  speechCount = 0; 
+
+  function speakNext() {
+    if (!alarmTriggered) return; 
+    if (speechCount < 3) {
+      speechCount++;
+      const uttr = new SpeechSynthesisUtterance(voiceText);
+      uttr.lang = 'ja-JP';
+      uttr.rate = 1.1;
+      uttr.pitch = 1.0; 
+      uttr.onend = () => {
+        if (alarmTriggered) {
+          if (speechCount < 3) {
+            setTimeout(speakNext, 500);
+          } else {
+            aiStatus.textContent = "🚨【警告】応答なし！緊急サイレン作動中（15秒間）！！";
+            startSirenSound();
           }
         }
+      };
+      window.speechSynthesis.speak(uttr);
+    }
+  } 
+  speakNext();
+} 
 
-        const currentDiffRatio = (diffCount * 4) / totalPixels;
+function triggerAlarm(message, voiceText) {
+  if (alarmTriggered) return;
+  alarmTriggered = true; 
+  aiStatus.textContent = message + " (音声案内中...)";
+  aiStatus.style.color = "#f44336"; 
+  startBtn.style.background = '#FF9800';
+  startBtn.textContent = '🚨 アラーム停止 / 再監視'; 
+  if (appModeSelect.value === 'area_watch') {
+    targetBox.style.borderColor = '#f44336';
+  } else {
+    tapMarker.style.borderColor = '#f44336';
+  } 
+  speakVoiceThreeTimes(voiceText);
+} 
 
-        // 差分が指定割合を超えたらアラート発動
-        if (currentDiffRatio > requiredDiffRatio) {
-          triggerAlert();
+function resetAlarmState() {
+  alarmTriggered = false;
+  speechCount = 0;
+  if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+  stopSirenSound(); 
+  if (alarmTimeoutTimer) { clearTimeout(alarmTimeoutTimer); alarmTimeoutTimer = null; } 
+  prevImageData = null; tapBaseImageData = null; 
+
+  if (isMonitoring && !isVehicleMoving) {
+    startBtn.style.background = '#2E7D32';
+    startBtn.textContent = '監視中...';
+    targetBox.style.borderColor = '#ffeb3b';
+    tapMarker.style.borderColor = '#00e676';
+    aiStatus.style.color = "#4CAF50";
+    aiStatus.textContent = appModeSelect.value === 'area_watch' ? "👀 監視再開中..." : "🚗 先行車監視再開（停車中）";
+  }
+} 
+
+startBtn.addEventListener('click', () => {
+  unlockAudioForiOS();
+  if (!video.srcObject) {
+    initCamera().then(() => startMonitoring());
+  } else {
+    if (alarmTriggered) {
+      resetAlarmState();
+    } else if (!isMonitoring) {
+      startMonitoring();
+    }
+  }
+}); 
+
+stopBtn.addEventListener('click', () => {
+  isMonitoring = false;
+  resetAlarmState();
+  zoomContainer.style.display = 'none'; tapMarker.style.display = 'none'; tapPoint = null;
+  startBtn.style.background = '#4CAF50'; startBtn.textContent = '監視スタート';
+  targetBox.classList.remove('is-active');
+  aiStatus.textContent = "✅ 停止しました";
+  
+  if (gpsWatcherId) {
+    navigator.geolocation.clearWatch(gpsWatcherId);
+    gpsWatcherId = null;
+  }
+  isVehicleMoving = false;
+  gpsStatus.textContent = "📡 GPS: 未作動";
+}); 
+
+function startMonitoring() {
+  isMonitoring = true; resetAlarmState(); updateContainerRect(); updateBoxStyle();
+  if (appModeSelect.value === 'area_watch') {
+    zoomContainer.style.display = 'block';
+  } else {
+    zoomContainer.style.display = 'none';
+    if (!tapPoint) aiStatus.textContent = "👆 前の車を画面上でタップしてね！";
+  }
+  setTimeout(() => { requestAnimationFrame(detectMotion); }, 200);
+
+  if (!gpsWatcherId && "geolocation" in navigator) {
+    gpsWatcherId = navigator.geolocation.watchPosition((position) => {
+      const speedMps = position.coords.speed || 0;
+      const speedKmh = speedMps * 3.6;
+      gpsStatus.textContent = `📡 GPS: 測位中 (${speedKmh.toFixed(1)} km/h)`;
+
+      if (speedKmh >= 5 && !isVehicleMoving) {
+        isVehicleMoving = true;
+        resetAlarmState();
+        startBtn.style.background = '#00bfff';
+        startBtn.textContent = '🚚 走行一時中断';
+        aiStatus.textContent = "🚚 走行中（監視一時停止）";
+        aiStatus.style.color = "#FF9800";
+        if (appModeSelect.value === 'area_watch') targetBox.style.borderColor = '#999';
+        tapMarker.style.borderColor = '#999';
+      } else if (speedKmh <= 3 && isVehicleMoving) {
+        isVehicleMoving = false;
+        prevImageData = null;
+        tapBaseImageData = null;
+        const delaySec = parseInt(delaySlider.value);
+        lastCheckTime = Date.now() + (delaySec * 1000); 
+
+        startBtn.style.background = '#00bfff';
+        startBtn.textContent = `⏳ 停車ウェイト(${delaySec}秒)`;
+
+        aiStatus.textContent = `✅ 停車検知（${delaySec}秒後に再開します）`;
+        aiStatus.style.color = "#4CAF50";
+        if (appModeSelect.value === 'area_watch') targetBox.style.borderColor = '#ffeb3b';
+        tapMarker.style.borderColor = '#00e676';
+
+        setTimeout(() => {
+          if (isMonitoring && !isVehicleMoving && !alarmTriggered) {
+            startBtn.style.background = '#2E7D32';
+            startBtn.textContent = '監視中...';
+          }
+        }, delaySec * 1000);
+      }
+    }, (error) => {
+      gpsStatus.textContent = `📡 GPSエラー: ${error.message}`;
+    }, {
+      enableHighAccuracy: true,
+      maximumAge: 0,
+      timeout: 5000
+    });
+  }
+} 
+
+function detectMotion() {
+  if (!isMonitoring) return;
+  const vW = video.videoWidth, vH = video.videoHeight;
+  if (vW === 0 || vH === 0) { requestAnimationFrame(detectMotion); return; } 
+
+  outputCanvas.width = vW; outputCanvas.height = vH;
+  if (nightModeSelect.value === 'on') ctx.filter = 'brightness(220%) contrast(130%)';
+  else ctx.filter = 'none'; 
+
+  ctx.drawImage(video, 0, 0, vW, vH);
+  const mode = appModeSelect.value; 
+
+  if (alarmTriggered) {
+    requestAnimationFrame(detectMotion);
+    return;
+  } 
+
+  if (isVehicleMoving) {
+    requestAnimationFrame(detectMotion);
+    return;
+  }
+
+  if (mode === 'area_watch') {
+    const scaleX = vW / containerRect.width, scaleY = vH / containerRect.height;
+    const boxX = (boxConfig.x / 100) * containerRect.width, boxY = (boxConfig.y / 100) * containerRect.height;
+    const boxW = (boxConfig.width / 100) * containerRect.width, boxH = (boxConfig.height / 100) * containerRect.height;
+    const sx = boxX * scaleX, sy = boxY * scaleY, sw = boxW * scaleX, sh = boxH * scaleY; 
+
+    if (sw > 0 && sh > 0) {
+      const aiW = 200, aiH = sh * (aiW / sw);
+      zoomCanvas.width = aiW; zoomCanvas.height = aiH;
+      try { zoomCtx.drawImage(video, sx, sy, sw, sh, 0, 0, aiW, aiH); } catch(e) {} 
+
+      const subImgData = ctx.getImageData(sx, sy, sw, sh);
+      const data = subImgData.data, now = Date.now(); 
+
+      if (now - lastCheckTime > 300) {
+        lastCheckTime = now;
+        if (prevImageData && prevImageData.width === subImgData.width && prevImageData.height === subImgData.height) {
+          let changedPixels = 0; const prevData = prevImageData.data;
+          
+          for (let i = 0; i < data.length; i += 32) {
+            if ((Math.abs(data[i] - prevData[i]) + Math.abs(data[i+1] - prevData[i+1]) + Math.abs(data[i+2] - prevData[i+2])) > 80) changedPixels++;
+          }
+          
+          const changeRatio = changedPixels / (data.length / 32);
+
+          // ★追加ロジック：光変化のカット判定
+          // 変化した割合が「設定した閾値(例: 60%)」を超えている場合、「これは光の急変（ノイズ）だ」と判断して無視する。
+          // 閾値未満で、かつ「メイン感度」の閾値は超えている場合にのみアラームを鳴らす。
+          if (lightFilterThreshold < 1.0 && changeRatio > lightFilterThreshold) {
+             // 光変化とみなしてスルー（デバッグ用にコンソールには出す）
+             // console.log(`[光カット] 変化量 ${changeRatio.toFixed(2)} が閾値 ${lightFilterThreshold} を超えたため無視`);
+          } 
+          else if (changeRatio > sensitivityThreshold) {
+            // 通常の動体検知
+            triggerAlarm("🚨【枠内検知】動体を検知しました！", "枠内で動きを検知しました");
+          }
+        }
+        prevImageData = subImgData;
+      }
+    }
+  }
+  else if (mode === 'car_start') {
+    if (tapPoint) {
+      const scaleX = vW / containerRect.width, scaleY = vH / containerRect.height;
+      const cropW = 100 * scaleX, cropH = 100 * scaleY;
+      const cropX = Math.max(0, (tapPoint.x * scaleX) - (cropW / 2));
+      const cropY = Math.max(0, (tapPoint.y * scaleY) - (cropH / 2)); 
+
+      const currentCropData = ctx.getImageData(cropX, cropY, cropW, cropH); 
+
+      if (!tapBaseImageData) {
+        tapBaseImageData = currentCropData;
+        aiStatus.textContent = "🚗 先行車の静止状態を記憶。発進監視中！";
+      } else {
+        const now = Date.now();
+        if (now - lastCheckTime > 300) {
+          lastCheckTime = now;
+          let changedPixels = 0; const cur = currentCropData.data, base = tapBaseImageData.data; 
+
+          for (let i = 0; i < cur.length; i += 32) {
+            if ((Math.abs(cur[i] - base[i]) + Math.abs(cur[i+1] - base[i+1]) + Math.abs(cur[i+2] - base[i+2])) > 80) changedPixels++;
+          } 
+
+          const changeRatio = changedPixels / (cur.length / 32);
+          
+          // ★発進監視モードにも光カットを適用
+          if (lightFilterThreshold < 1.0 && changeRatio > lightFilterThreshold) {
+             // 光変化とみなしてスルー
+          }
+          else if (changeRatio > sensitivityThreshold) {
+            triggerAlarm("🚨【発進検知】前の車が動きました！", "前の車が誤検知しないよう、停止後のウェイトを確認してください");
+          }
         }
       }
-
-      prevFrameData = currentFrame;
-      animFrameId = requestAnimationFrame(processFrame);
     }
+  } 
 
-    function triggerAlert() {
-      if (alertOverlay.style.display !== 'flex') {
-        alertOverlay.style.display = 'flex';
-        resetAlertBtn.style.display = 'block';
-        playBeep();
-      }
-    }
-  </script>
+  requestAnimationFrame(detectMotion);
+} 
+
+updateContainerRect(); updateBoxStyle();
+</script>
 </body>
 </html>
+
